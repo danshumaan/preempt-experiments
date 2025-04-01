@@ -1,5 +1,7 @@
 # preempt
-This is a modular version of Preempt, meant to be used as part of other projects. For results found in our arxiv paper (link will be put up soon!), please refer to the main branch.
+This is a modular version of Preempt, meant to be used as part of other projects. 
+
+For the experiments and results found in our arxiv paper (link will be put up soon), please refer to the `main` branch.
 ## Setup
 Install libraries in a Python 3.11.4 virtual environment with `requirements.txt`.
 
