@@ -569,13 +569,14 @@ class Sanitizer():
         """
         new_entities = []
         entity_lookup = []
-        entity_mapping = dict()
+        entity_mapping = []
         use_fpe, use_mdp = kwargs['use_fpe'], kwargs['use_mdp']
         epsilon = kwargs['epsilon']
 
         valid_indices = []
         for kk, input in enumerate(inputs):
             temp = []
+            temp_dict = {}
             trip = 0
             for real_money in input:
                 try:
@@ -596,7 +597,7 @@ class Sanitizer():
 
                     temp.append(str(money))
                     entity_lookup.append(str(real_money))
-                    entity_mapping[money] = str(real_money)
+                    temp_dict[str(money)] = str(real_money)
                 except Exception as e:
                     print(e)
                     trip += 1
@@ -605,6 +606,7 @@ class Sanitizer():
 
             if trip==0: valid_indices.append(kk)
             new_entities.append(temp)
+            entity_mapping.append(temp_dict)
 
         return new_entities, entity_lookup, entity_mapping
 
@@ -614,8 +616,8 @@ class Sanitizer():
         use_mdp = kwargs['use_mdp']
         if use_fpe:
             offset=7
-            for line in inputs:
-                for value in self.entity_mapping:
+            for line_idx, line in enumerate(inputs):
+                for value in self.entity_mapping[line_idx]:
                     val = str(value)
                     if len(val)<6: continue
                     decrypt = self.fpe_decrypt(val)
@@ -631,9 +633,8 @@ class Sanitizer():
 
         elif use_mdp:
             for line_idx, line in enumerate(inputs):
-                extr = self.entity_mapping[line_idx]
-                for k in range(len(extr['pt'])):
-                    line = self.replace_word(line, extr['ct'][k], extr['pt'][k])
+                for value in self.entity_mapping[line_idx]:
+                    line = self.replace_word(line, value, self.entity_mapping[line_idx][value])
                 decrypted_lines.append(line)
 
         return decrypted_lines
