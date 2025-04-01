@@ -12,3 +12,7 @@ We will add support for including your own NER models in the near future.
 
 ## Usage
 Usage examples can be found in `demo.ipynb`
+
+We currently only support sanitization for names, currency values and age. 
+
+We will add support for generalized NER in the near future. 
