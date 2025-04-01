@@ -3,4 +3,10 @@ This is a modular version of Preempt, meant to be used as part of other projects
 ## Setup
 Install libraries in a Python 3.11.4 virtual environment with `requirements.txt`.
 
-See a usage example in `demo.ipynb`
+## NER models
+We currently support [Universal NER](https://universal-ner.github.io/) and [Llama-3 8B](https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct) for NER. 
+
+We will support for adding your own NER models in the near future. 
+
+## Usage
+Usage examples can be found in `demo.ipynb`
