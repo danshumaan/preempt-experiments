@@ -46,4 +46,7 @@ Sanitized sentences can be desanitized using `sanitizer.decrypt()`:
 desanitized_sentences = sanitizer.decrypt(sanitized_sentences, entity='Name')
 ```
 
+#### Sanitizing multiple PII attributes
+If you want to sanitize multiple sensitive attributes, create a sanitizer for each category separately. 
+
 For more examples, check out `demo.ipynb`
