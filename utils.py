@@ -2,9 +2,7 @@ import json
 import math
 import random
 import sys
-import time
-import asyncio
-from typing import Dict, List, Any, Union
+from typing import Dict, List, Any, Optional, Union
 from tqdm import tqdm
 import re
 import unicodedata
@@ -16,7 +14,6 @@ sys.path.insert(0, 'universal-ner')
 from src.utils import * # type: ignore
 
 from fastchat.conversation import get_conv_template
-from openai import OpenAI
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
@@ -86,6 +83,9 @@ def load_data(fp: str) -> Dict[str, Any]:
 ###################################################
 """
 def llama_prompt_preprocessor(all_text: List[str], **kwargs) -> List[str]:
+    """
+    Prompt preprocessing for NER with Llama-3 8B.
+    """
     entity = kwargs['entity_type']
     prompts = []
     for input in all_text:
@@ -109,6 +109,9 @@ def llama_prompt_preprocessor(all_text: List[str], **kwargs) -> List[str]:
     return prompts
 
 def uniner_prompt_preprocessor(all_text: List[str], **kwargs) -> List[str]:
+    """
+    Prompt preprocessing for NER with UniNER.
+    """
     entity_type = kwargs['entity_type']
     examples = [
         {
@@ -139,7 +142,7 @@ def gen_delimiters(model_path: str) -> str:
 
 def prompt_preprocessor(model_path: str):
     """
-    Prompt preprocesssing for NER.
+    Prompt preprocesssing directory for NER.
     """
     if 'uniner' in model_path.lower() or 'universal' in model_path.lower():
         return uniner_prompt_preprocessor
@@ -158,7 +161,10 @@ def clean_name_prefixes(all_text):
     outputs = ['"[' + output.replace("'","") + ']"' for output in outputs]
     return outputs
 
-def postprocess_output(outputs: List[str], output_dict: Dict[str, str], entity_type: str):
+def postprocess_output(outputs: List[str], output_dict: Dict[str, List[List[str]]], entity_type: str):
+    """
+    Output postprocessing for entities detected by NER.
+    """
     if entity_type=="Name" or entity_type=="Full Name":
         outputs = clean_name_prefixes(outputs) 
     if entity_type=="Age":
@@ -209,7 +215,7 @@ class any2en(Dataset):
 class NER():
     """
     Returns a NER model object. Call to run NER for a specific entity type.
-    Pass in the delimiter for your model's generation. For example. UniNER
+    Pass in the delimiter for your model's generation. For example, UniNER
     uses 'ASSISTANT' as the generation delimiter,
     """
     def __init__(self, model_path, delimiter="ASSISTANT:", device='cuda:0'):
@@ -231,9 +237,21 @@ class NER():
                                   )
         return tokenized_text
 
-    def extract(self, prompts: List[str], entity_type: str, batch_size=1, output_dict=None) -> Dict[str, List[str]]:
+    def extract(self, prompts: List[str], entity_type: str, batch_size=1, output_dict: Optional[Dict[str, List[List[str]]]]=None) -> Dict[str, List[List[str]]]:
         """
         Takes in a list of strings and returns a dictionary of PII categories and list of values. 
+
+        Args:
+            prompts (List[str]): List of input prompts.
+            entity_type (str): Entity for NER extraction. Choose from {Name/Money/Age}
+            batch_size (int): Batch size for processing NER.
+            output_dict (Optional[Dict[str, List[str]]]): A dictionary with the sensitive attribute as the key 
+                                                          with a corresponding list of sensitive values detected
+                                                          by NER for every input string. 
+        Returns:
+            output_dict Dict[str, List[str]]: A dictionary with the sensitive attribute as the key 
+                                              with a corresponding list of sensitive values detected
+                                              by NER for every input string.
         """
         if output_dict is None: output_dict = dict()
         output_dict[entity_type] = []
@@ -267,7 +285,17 @@ class Sanitizer():
         self.entity_lookup = []
         self.entity_mapping = []
 
-    def replace_word(self, text, word1, word2):
+    def replace_word(self, text: str, word1: str, word2: str):
+        """
+        Find and replace strings in a given piece of text.
+
+        Args:
+            text (str): A string containing a target substring word1.
+            word1 (str): Target to replace with word2 in text.
+            word2 (str): Replacement for word1 in text.
+        Returns:
+            text (str): With word1 replaced with word2
+        """
         pattern = r'\b' + re.escape(word1) + r'\b'
         return re.sub(pattern, word2, text, count=1)
 
@@ -278,7 +306,10 @@ class Sanitizer():
                     text = text[:idx] + reference_text[idx] + text[idx:]
         return text
 
-    def fpe_encrypt(self, value):
+    def fpe_encrypt(self, value: str):
+        """
+        Encrypt value using FPE
+        """
         return self.format_align_digits(
             self.cipher_fn.encrypt(
             str(value).replace("$","").replace(",","").replace(".","").replace(" ","")
@@ -286,7 +317,10 @@ class Sanitizer():
             str(value)
         )
 
-    def fpe_decrypt(self, value):
+    def fpe_decrypt(self, value: str):
+        """
+        Decrypt FPE value
+        """
         return self.format_align_digits(
             self.cipher_fn.decrypt(
                 str(value).replace("$","").replace(",","").replace(".","").replace(" ","")
@@ -294,8 +328,19 @@ class Sanitizer():
             str(value)
         )
     
-    def M_epsilon(self, x, n_lower, n_upper, epsilon, discretization_size=100):
-        # Sample within given range to provide privacy guarantee
+    def M_epsilon(self, x: int, n_lower: int, n_upper: int, epsilon: float, discretization_size=100) -> int:
+        """
+        m-LDP for noising numerical values between bounds.
+
+        Args:
+            x (int): Value to noise with m-LDP.
+            n_lower (int): Lower bound for noising x.
+            n_upper (int): Upper bound for noising x.
+            epsilon (float): Privacy budget.
+            discretization_size: For sampling.
+        Returns:
+            noised_output (int): The noised output.
+        """
         n_upper = int(n_upper)
         n_lower = int(n_lower)
         total_range = n_upper-n_lower
@@ -307,9 +352,17 @@ class Sanitizer():
         noised_output = np.random.choice(range(discretization_size),1,p=p_i)*total_range/discretization_size+n_lower
         return int(noised_output[0])
     
-    def encrypt_names(self, inputs: List[str], **kwargs) -> Union[List[str], Union[List[str],List[str]], Dict[str,str]]:
+    def encrypt_names(self, inputs: List[str], **kwargs: Dict[str, Any]) -> Union[List[List[str]], Union[List[str],List[str]], Dict[str,str]]:
         """
-        FPE encryption for names of people.
+        FPE encryption for names of people. 
+
+        Args:
+            inputs (List[str]): List of strings with sensitive values.
+        Returns:
+            Union[List[str], Union[List[str],List[str]], Dict[str,str]]: Containing:
+            1. new_entities (List[List[str]]): A nested list of strings, where each nested list contains the new encrypted entities.
+            2. entity_lookup (Union[List[str],List[str]]): Two lists, with the first one having the list of first names and the second being the list of last names.
+            3. entity_mapping (Dict[str,str]): Dict, maps ciphertext names to plaintext names.
         """
         new_entities = []
         entity_lookup = []
@@ -317,7 +370,7 @@ class Sanitizer():
         use_fpe = kwargs['use_fpe']
 
         if use_fpe:
-            countries = ['US','GB','FR']#'CA','DK','FI','RU','LU']# ,'SA','IN','CN','ES','AT','BR', 'CH', 'EG']
+            countries = ['US','GB','FR']
             first_names = []
             last_names = []
 
@@ -421,7 +474,7 @@ class Sanitizer():
         offset = 3
         for k_input in inputs:
             temp = []
-            for input in k_input:
+            for k, input in enumerate(k_input):
                 if use_fpe:
                     if " " in input:
                         # If already first-last name, run and conjoin.
@@ -444,7 +497,7 @@ class Sanitizer():
                             ct_last_name = last_names[int(b)]
                             ct_name = ct_name + " " + ct_last_name
 
-                        temp.append(ct_name)
+                        if ct_name not in temp: temp.append(ct_name)
                     else:
                         a = input
                         try:
@@ -468,15 +521,17 @@ class Sanitizer():
                             ct_last_name = last_names[int(b)]
                             ct_name = ct_name + " " + ct_last_name
 
-                        temp.append(ct_name)
+                        if ct_name not in temp: temp.append(ct_name)
 
                     # Grad mapping for decoding and for sanity.
                     entity_mapping[ct_name] = input
 
                 else:
-                    for k in range(len(input)):
-                        temp_name = names.get_full_name(gender='male')
-                        temp.append(temp_name)
+                    first_names = []
+                    last_names = []
+                    temp_name = names.get_full_name(gender='male')
+                    temp.append(temp_name)
+                    entity_mapping[temp_name] = input
 
             new_entities.append(temp)
         entity_lookup.append(first_names)
@@ -484,7 +539,15 @@ class Sanitizer():
 
         return new_entities, entity_lookup, entity_mapping
 
-    def decrypt_names(self, inputs: List[str], **kwargs) -> List[str]:        
+    def decrypt_names(self, inputs: List[str], **kwargs: Dict[str, Any]) -> List[str]:
+        """
+        Desanitizes names in a list of sanitized strings.
+
+        Args:
+            inputs (List[str]): List of sanitized strings
+        Returns:
+            decrypted_lines (List[str]): List of desanitized strings
+        """       
         def check(name_list, target):
             for i, n in enumerate(name_list):
                 if finder(name_list[i], target):
@@ -563,9 +626,17 @@ class Sanitizer():
 
         return decrypted_lines
 
-    def encypt_money(self, inputs: List[str], **kwargs) -> Union[List[str], Union[List[str],List[str]], Dict[str,str]]:
+    def encypt_money(self, inputs: List[str], **kwargs: Dict[str, Any]) -> Union[List[List[str]], Union[List[str],List[str]], List[Dict[str,List[str]]]]:
         """
         Encrypting numerical money values with FPE or m-LDP
+
+        Args:
+            inputs (List[str]): List of strings with sensitive values.
+        Returns:
+            Union[List[List[str]], Union[List[str],List[str]], Dict[str,str]]: Containing:
+            1. new_entities (List[List[str]]): A nested list of strings, where each nested list contains the new encrypted entities.
+            2. entity_lookup (Union[List[str],List[str]]): A nested list of plaintext sensitive attributes.
+            3. entity_mapping (List[Dict[str,List[str]]]): A list, contains dicts with a list of ciphertext and corresponding plaintext values.
         """
         new_entities = []
         entity_lookup = []
@@ -576,6 +647,7 @@ class Sanitizer():
         valid_indices = []
         for kk, input in enumerate(inputs):
             temp = []
+            text_pt = []
             temp_dict = {}
             trip = 0
             for real_money in input:
@@ -596,7 +668,7 @@ class Sanitizer():
                             money = round(self.M_epsilon(int(float(real_money)),1000,10000,epsilon), 2)
 
                     temp.append(str(money))
-                    entity_lookup.append(str(real_money))
+                    text_pt.append(str(real_money))
                     temp_dict[str(money)] = str(real_money)
                 except Exception as e:
                     print(e)
@@ -605,12 +677,21 @@ class Sanitizer():
                     temp.append('None')
 
             if trip==0: valid_indices.append(kk)
+            entity_lookup.append(text_pt)
             new_entities.append(temp)
             entity_mapping.append(temp_dict)
 
         return new_entities, entity_lookup, entity_mapping
 
-    def decrypt_money(self, inputs: List[str], **kwargs) -> List[str]:
+    def decrypt_money(self, inputs: List[str], **kwargs: Dict[str, Any]) -> List[str]:
+        """
+        Desanitizes currency values in a list of sanitized strings.
+
+        Args:
+            inputs (List[str]): List of sanitized strings
+        Returns:
+            decrypted_lines (List[str]): List of desanitized strings
+        """
         decrypted_lines = []
         use_fpe = kwargs['use_fpe']
         use_mdp = kwargs['use_mdp']
@@ -639,16 +720,29 @@ class Sanitizer():
 
         return decrypted_lines
 
-    def encrypt_age(self, inputs: List[str], **kwargs)-> Union[List[str], Union[List[str],List[str]], Dict[str,str]]:
+    def encrypt_age(self, inputs: List[str], **kwargs)-> Union[List[List[str]], Union[List[str],List[str]], List[Dict[str,List[str]]]]:
+        """
+        Encrypting numerical money values with FPE or m-LDP
+
+        Args:
+            inputs (List[str]): List of strings with sensitive values.
+        Returns:
+            Union[List[List[str]], Union[List[str],List[str]], Dict[str,str]]: Containing:
+            1. new_entities (List[List[str]]): A nested list of strings, where each nested list contains the new encrypted entities.
+            2. entity_lookup (Union[List[str],List[str]]): A nested list of plaintext sensitive attributes.
+            3. entity_mapping (List[Dict[str,List[str]]]): A list, contains dicts with a list of ciphertext and corresponding plaintext values.
+        """
         new_entities = []
         entity_lookup = []
         entity_mapping = []
         epsilon = kwargs['epsilon']
         for input in inputs:
             temp = []
+            text_pt = []
             temp_dict = {"pt":[],"ct":[]}
             for real_age in input:
                 try:
+                    text_pt.append(real_age)
                     temp_age = self.M_epsilon(int(real_age),10,99,epsilon)
                     age = str(temp_age)
                     temp.append(age)
@@ -657,12 +751,20 @@ class Sanitizer():
                 except:
                     temp.append(None)
             entity_mapping.append(temp_dict)
-            # print(new_entities)
+            entity_lookup.append(text_pt)
             new_entities.append(temp)
 
         return new_entities, entity_lookup, entity_mapping
 
     def decrypt_age(self, inputs: List[str], **kwargs) -> List[str]:
+        """
+        Desanitizes age values in a list of sanitized strings.
+
+        Args:
+            inputs (List[str]): List of sanitized strings
+        Returns:
+            decrypted_lines (List[str]): List of desanitized strings
+        """
         decrypted_lines = []
         for line_idx, line in enumerate(inputs):
                 extr = self.entity_mapping[line_idx]
@@ -672,9 +774,19 @@ class Sanitizer():
 
         return decrypted_lines
 
-    def encrypt(self, inputs, epsilon, entity='Name', use_mdp=False, use_fpe=True) -> Union[List[str], List[int]]:
+    def encrypt(self, inputs: List[str], epsilon=0.1, entity='Name', use_mdp=False, use_fpe=True) -> Union[List[str], List[int]]:
         """
         Takes in a list of inputs and returns a list of sanitized outputs.
+
+        Args:
+            inputs (List[str]): List of inputs with sensitive attributes.
+            epsilon (float): For m-LDP.
+            entity (str): Sensitive attribute to sanitize. Pick from {Name/Money/Age}.
+            use_mdp (bool): Use m-LDP for encrypting numerical values.
+            use_fpe (bool): Use FPE for encrypting alphanumerical values.
+        Returns:
+            data_encrypted (List[str]): List of sanitized strings.
+            invalid_indices (List[int]): List of indices where nothing was found for sanitization.
         """
         enc_fn_mapping = {
             "Name": self.encrypt_names,
@@ -701,10 +813,21 @@ class Sanitizer():
 
         return data_encrypted, invalid_indices
     
-    def decrypt(self, inputs, entity='Name', extracted=None, use_mdp=False, use_fpe=True):
+    def decrypt(
+            self, 
+            inputs: List[str], 
+            entity='Name', 
+            extracted: Optional[Dict[str, List[str]]]=None, 
+            use_mdp=False, use_fpe=True
+        ):
         """
         Takes in a list of inputs and returns a list of desanitized outputs.
         Encrypt must be used before this method!
+
+        Args:   
+            inputs (List[str]): List of sanitized inputs.
+            extracted (Optional[Dict[str, List[str]]]): Dictionary of extracted sensitive attributes (see NER.extract())
+
         """
         dec_fn_mapping = {
             "Name": self.decrypt_names,
@@ -712,7 +835,6 @@ class Sanitizer():
             "Age": self.decrypt_age,
         }
         data_decrypted = []
-        invalid_indices = []
         if extracted is None: extracted = self.ner.extract(inputs, entity_type=entity)[entity]
         data_decrypted = dec_fn_mapping[entity](inputs, extraction=extracted, use_fpe=use_fpe, use_mdp=use_mdp)
 
